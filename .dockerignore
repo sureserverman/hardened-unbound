@@ -1,0 +1,28 @@
+.git/
+.gitignore
+.github/
+
+# AI assistant artifacts.
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.copilot/
+CLAUDE.md
+AGENTS.md
+.claude_memory
+
+# Docs / plans / audit reports.
+doc/
+docs/
+*.md
+sec-review-report-*.md
+
+# Editor / OS.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+*.backup-*

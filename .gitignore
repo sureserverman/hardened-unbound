@@ -14,3 +14,6 @@ AGENTS.md
 # ===== AI / Design Plans =====
 docs/plans/
 plans/
+
+# Audit reports — generated locally, not for upstream.
+sec-review-report-*.md
