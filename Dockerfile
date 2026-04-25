@@ -53,19 +53,30 @@ RUN chmod 500 $APP_DIR/post-install.sh
 WORKDIR $APP_DIR
 
 # --- Application layer ---
+# libcap is installed temporarily so we can grant CAP_NET_BIND_SERVICE on the
+# unbound binary; with the file capability set, downstream images can run
+# unbound as a non-root user (e.g. USER unbound) and still bind port 53.
 RUN apk -U --no-cache upgrade \
-    && apk add --no-cache unbound openssl bind-tools tini
+    && apk add --no-cache unbound openssl bind-tools tini libcap \
+    && setcap 'cap_net_bind_service=+ep' /usr/sbin/unbound \
+    && apk del libcap
 
 # Generate control keys and DNSSEC root trust anchor at build time
 RUN unbound-control-setup \
     && unbound-anchor -a /etc/unbound/root.key || true \
     && chown -R unbound:unbound /etc/unbound
 
-HEALTHCHECK CMD dig +short +norecurse +retry=0 +time=3 @127.0.0.1 google.com || exit 1
+# Exec-form HEALTHCHECK with explicit interval/timeout/retries.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD ["dig", "+short", "+norecurse", "+retry=0", "+time=3", "@127.0.0.1", "id.server", "CHAOS", "TXT"]
 
 # NOTE: post-install.sh is NOT run here so downstream images can
 # install packages and add config before locking down.
-# Downstream Dockerfiles should call: RUN $APP_DIR/post-install.sh
+# Downstream Dockerfiles should:
+#   1. RUN $APP_DIR/post-install.sh   (lock down APP_DIR)
+#   2. USER unbound                    (drop privileges; cap_net_bind_service
+#                                       is already set on /usr/sbin/unbound)
+# Downstream MUST supply an unbound.conf — this base image ships none.
 
 ENTRYPOINT ["tini", "--"]
 CMD ["unbound", "-dp"]
