@@ -53,13 +53,15 @@ RUN chmod 500 $APP_DIR/post-install.sh
 WORKDIR $APP_DIR
 
 # --- Application layer ---
-# libcap is installed temporarily so we can grant CAP_NET_BIND_SERVICE on the
-# unbound binary; with the file capability set, downstream images can run
-# unbound as a non-root user (e.g. USER unbound) and still bind port 53.
+# libcap is installed as a named virtual package so we can grant
+# CAP_NET_BIND_SERVICE on the unbound binary. `apk del .setcap-deps` then
+# removes libcap ONLY if no installed package depends on it (plain
+# `apk del libcap` would be reverse-dep-rejected when unbound links libcap).
 RUN apk -U --no-cache upgrade \
-    && apk add --no-cache unbound openssl bind-tools tini libcap \
+    && apk add --no-cache unbound openssl bind-tools tini \
+    && apk add --no-cache --virtual .setcap-deps libcap \
     && setcap 'cap_net_bind_service=+ep' /usr/sbin/unbound \
-    && apk del libcap
+    && apk del .setcap-deps
 
 # Generate control keys and DNSSEC root trust anchor at build time
 RUN unbound-control-setup \
