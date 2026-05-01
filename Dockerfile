@@ -63,10 +63,15 @@ RUN apk -U --no-cache upgrade \
     && setcap 'cap_net_bind_service=+ep' /usr/sbin/unbound \
     && apk del .setcap-deps
 
-# Generate control keys and DNSSEC root trust anchor at build time
-RUN unbound-control-setup \
-    && unbound-anchor -a /etc/unbound/root.key || true \
-    && chown -R unbound:unbound /etc/unbound
+# Generate control keys and DNSSEC root trust anchor at build time.
+# `set -ex` makes failures surface with the exact failing command in the
+# build log; `unbound-anchor` is grouped so its `|| true` tolerates only
+# its own failure (without grouping, the `||` binds across the chain and
+# the chown ends up only running on the failure path — long-standing bug).
+RUN set -ex; \
+    unbound-control-setup; \
+    unbound-anchor -a /etc/unbound/root.key || true; \
+    chown -R unbound:unbound /etc/unbound
 
 # Exec-form HEALTHCHECK with explicit interval/timeout/retries.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
