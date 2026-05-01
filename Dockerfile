@@ -1,4 +1,4 @@
-FROM alpine:3.21.3
+FROM alpine:3.23.4
 
 LABEL org.opencontainers.image.source="https://github.com/sureserverman/hardened-unbound"
 
