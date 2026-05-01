@@ -63,15 +63,27 @@ RUN apk -U --no-cache upgrade \
     && setcap 'cap_net_bind_service=+ep' /usr/sbin/unbound \
     && apk del .setcap-deps
 
-# Generate control keys and DNSSEC root trust anchor at build time.
-# `set -ex` makes failures surface with the exact failing command in the
-# build log; `unbound-anchor` is grouped so its `|| true` tolerates only
-# its own failure (without grouping, the `||` binds across the chain and
-# the chown ends up only running on the failure path — long-standing bug).
-RUN set -ex; \
-    unbound-control-setup; \
-    unbound-anchor -a /etc/unbound/root.key || true; \
-    chown -R unbound:unbound /etc/unbound
+# Defensive: ensure the unbound user/group exist before chown.
+# The hardening pass at lines 28-47 deletes /sbin and /usr/sbin (except
+# apk + ln), which removes the addgroup/adduser symlinks BEFORE
+# `apk add unbound` runs its pre-install script. Alpine's unbound
+# pre-install swallows that failure silently (`2>/dev/null; exit 0`),
+# so the unbound user is never created and chown -R unbound:unbound
+# below fails. The original `&&`/`||` precedence bug masked this by
+# routing chown into the unbound-anchor failure branch only; the
+# bug-fix in ff1578f exposed it. /bin/busybox survives the hardening
+# pass, so call its addgroup/adduser applets directly.
+RUN /bin/busybox addgroup -S unbound 2>/dev/null || true
+RUN /bin/busybox adduser  -S -D -H -h /var/lib/unbound -s /sbin/nologin -G unbound -g unbound unbound 2>/dev/null || true
+
+# One RUN per command so buildkit's process-failure annotation names
+# the exact failing line on any future regression. unbound-anchor is
+# the only step that can legitimately fail (network fetch of the DNSSEC
+# root trust anchor) — its `|| true` is now scoped to itself, not the
+# whole chain.
+RUN unbound-control-setup
+RUN unbound-anchor -a /etc/unbound/root.key || true
+RUN chown -R unbound:unbound /etc/unbound
 
 # Exec-form HEALTHCHECK with explicit interval/timeout/retries.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
