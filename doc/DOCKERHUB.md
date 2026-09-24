@@ -52,10 +52,21 @@ docker run -d --name=hardened-unbound \
 podman run -d --name=hardened-unbound -p 53:53/tcp -p 53:53/udp --restart=always sureserver/hardened-unbound:latest
 ```
 
+## Remote control
+
+The image ships no remote-control keys. Earlier images baked one private keypair
+into every copy; if you used those keys over a network, treat them as public.
+Use a local Unix socket (`control-interface: /run/unbound/control.sock`,
+`control-use-cert: no`, directory owned by `unbound`, mode `0750`) and run
+`docker exec --user unbound <container> unbound-control status`. If you need
+network control, generate keys per instance at first start into a private
+volume (`unbound-control-setup -d <volume dir>`); never bake or share them.
+
 ## Hardening features
 
 - [iron-alpine](https://github.com/nicholasgasior/iron-alpine) base — stripped binaries, removed setuid bits, locked filesystem
-- DNSSEC root trust anchor and control keys pre-generated at build time
+- DNSSEC root trust anchor built offline at build time and verified against the DS records compiled into `unbound-anchor`; the build fails if the anchor cannot be verified
+- No remote-control keys in the image (see below)
 - `tini` as PID 1 for signal handling and zombie reaping
 - Unbound's default hardened configuration (DNSSEC validation, glue hardening)
 - `post-install.sh` available for final lockdown (removes apk, locks permissions, removes chown)

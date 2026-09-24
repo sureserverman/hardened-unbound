@@ -76,13 +76,49 @@ RUN apk -U --no-cache upgrade \
 RUN /bin/busybox addgroup -S unbound 2>/dev/null || true
 RUN /bin/busybox adduser  -S -D -H -h /var/lib/unbound -s /sbin/nologin -G unbound -g unbound unbound 2>/dev/null || true
 
-# One RUN per command so buildkit's process-failure annotation names
-# the exact failing line on any future regression. unbound-anchor is
-# the only step that can legitimately fail (network fetch of the DNSSEC
-# root trust anchor) — its `|| true` is now scoped to itself, not the
-# whole chain.
-RUN unbound-control-setup
-RUN unbound-anchor -a /etc/unbound/root.key || true
+# No remote-control credentials are generated here. `unbound-control-setup`
+# at build time baked ONE private server/control keypair into the public
+# image, shared by every copy. Consumers use a local Unix control socket, or
+# generate per-instance keys at first start into their own persistent volume
+# (see README "Remote control").
+#
+# DNSSEC root trust anchor, built and verified offline. The trust root is the
+# DS set compiled into unbound-anchor (`unbound-anchor -l`). Every root
+# DNSKEY 257 3 8 in Alpine's signed dnssec-root package must match one of
+# those DS records by its SHA-256 digest and is kept; a key that matches none
+# means the two packages disagree, and the build fails. A required KSK tag the
+# package lacks is written as its builtin DS line instead (Unbound's RFC 5011
+# tracking accepts a DS anchor). The build also fails when
+# REQUIRED_ROOT_KSK_TAGS is empty or non-numeric, or the package holds no root
+# DNSKEY. 20326 = KSK-2017, 38696 = KSK-2024, both published while the root
+# KSK rollover is under way; revisit when KSK-2017 is revoked. This replaces a
+# network fetch whose failure was ignored (`|| true`) and could leave the
+# image with no usable anchor. nice-dns/unbound/start.sh (build-seed) mirrors
+# this logic; keep the two in step.
+ARG REQUIRED_ROOT_KSK_TAGS="20326 38696"
+RUN set -eu; \
+    src=/usr/share/dnssec-root/trusted-key.key; out=/etc/unbound/root.key; \
+    [ -n "$(printf '%s' "$REQUIRED_ROOT_KSK_TAGS" | tr -d ' ')" ] \
+      || { echo "FATAL: REQUIRED_ROOT_KSK_TAGS is empty" >&2; exit 1; }; \
+    case "$REQUIRED_ROOT_KSK_TAGS" in *[!0-9\ ]*) echo "FATAL: REQUIRED_ROOT_KSK_TAGS must be numeric key tags" >&2; exit 1 ;; esac; \
+    builtin="$(unbound-anchor -l | grep -E '^\. IN DS [0-9]+ 8 2 [0-9A-F]{64}$')"; \
+    : >"$out.tmp"; dnskeys=""; \
+    while read -r owner class type flags proto alg key; do \
+      [ "$owner $class $type $flags $proto $alg" = ". IN DNSKEY 257 3 8" ] || continue; \
+      digest="$( { printf '\000\001\001\003\010'; printf '%s' "$key" | openssl base64 -d -A; } \
+        | openssl dgst -sha256 -r | cut -d' ' -f1 | tr a-f A-F)"; \
+      tag="$(printf '%s\n' "$builtin" | awk -v d="$digest" '$7 == d { print $4 }')"; \
+      [ -n "$tag" ] || { echo "FATAL: a root DNSKEY in $src matches no builtin DS" >&2; exit 1; }; \
+      printf '. IN DNSKEY 257 3 8 %s ; key tag %s\n' "$key" "$tag" >>"$out.tmp"; dnskeys="$dnskeys $tag"; \
+    done <"$src"; \
+    [ -n "$dnskeys" ] || { echo "FATAL: no root DNSKEY 257 3 8 in $src" >&2; exit 1; }; \
+    for t in $REQUIRED_ROOT_KSK_TAGS; do \
+      case " $dnskeys " in *" $t "*) continue ;; esac; \
+      ds="$(printf '%s\n' "$builtin" | awk -v t="$t" '$4 == t')"; \
+      [ -n "$ds" ] || { echo "FATAL: root KSK $t is neither in $src nor among the builtin DS" >&2; exit 1; }; \
+      printf '%s ; key tag %s (builtin DS)\n' "$ds" "$t" >>"$out.tmp"; \
+    done; \
+    mv "$out.tmp" "$out"; chmod 0644 "$out"
 RUN chown -R unbound:unbound /etc/unbound
 
 # Exec-form HEALTHCHECK with explicit interval/timeout/retries.

@@ -35,6 +35,8 @@
   - [As a base image](#as-a-base-image)
   - [Standalone](#standalone)
   - [Podman](#podman)
+  - [Remote control](#remote-control)
+  - [Trust anchor](#trust-anchor)
 - [Hardening features](#hardening-features)
 - [Roadmap](#roadmap)
 - [Project assistance](#project-assistance)
@@ -99,10 +101,57 @@
 > `podman generate systemd --name hardened-unbound --new > ~/.config/systemd/user/hardened-unbound.service`\
 > `systemctl --user enable --now hardened-unbound.service`
 
+### Remote control
+
+> The image ships **no** remote-control keys or certificates. Earlier images ran
+> `unbound-control-setup` at build time, so every copy of the public image held
+> the same private server and control keys. If you exposed `unbound-control` on
+> a network with those keys, treat them as public: switch to one of the options
+> below and redeploy.
+>
+> **Local Unix socket (recommended).** No keys, no network listener:
+>
+> ```
+> remote-control:
+>     control-enable: yes
+>     control-interface: /run/unbound/control.sock
+>     control-use-cert: no
+> ```
+>
+> Create `/run/unbound` owned by `unbound` with mode `0750` in your image.
+> Unbound creates the socket with mode `0660`. Control it through the runtime,
+> as the unbound user:
+> `docker exec --user unbound <container> unbound-control status`.
+> The image's own default configuration already uses a local socket.
+>
+> **Network control (only if you need it).** Generate keys per instance, at
+> first start, into a private persistent volume. Never bake them into an image
+> or copy them between instances:
+>
+> ```sh
+> # entrypoint, before starting unbound; /var/lib/unbound/control is a volume
+> [ -f /var/lib/unbound/control/unbound_server.key ] \
+>   || unbound-control-setup -d /var/lib/unbound/control
+> ```
+>
+> Point `server-key-file`, `server-cert-file`, `control-key-file` and
+> `control-cert-file` at that directory. Keep `control-interface` on a
+> loopback or private address.
+
+### Trust anchor
+
+> `/etc/unbound/root.key` holds the root KSKs (key tags 20326 and 38696). It is
+> built offline. Every root DNSKEY in Alpine's `dnssec-root` package must match
+> a DS record compiled into `unbound-anchor`, or the build fails. A required key
+> the package lacks is written as its builtin DS record. For RFC 5011 updates to
+> survive restarts, copy it into a writable persistent volume on first start and
+> point `auto-trust-anchor-file` there.
+
 ## Hardening features
 
 - Built on [iron-alpine](https://github.com/nicholasgasior/iron-alpine) — minimal Alpine with stripped binaries, removed setuid bits, and locked-down filesystem
-- DNSSEC root trust anchor and control keys pre-generated at build time
+- DNSSEC root trust anchor built offline at build time and verified against the DS records compiled into `unbound-anchor`; the build fails if the anchor cannot be verified
+- No remote-control keys in the image (see [Remote control](#remote-control))
 - `tini` as PID 1 for proper signal handling and zombie reaping
 - Unbound's default hardened configuration (DNSSEC validation, glue hardening)
 - `post-install.sh` available for downstream images to remove `apk`, lock permissions, and remove `chown`
